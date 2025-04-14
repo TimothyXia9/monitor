@@ -4,7 +4,6 @@ import threading
 import json
 import requests
 import os
-# import time
 import sqlite3
 import numpy as np
 from typing import List
@@ -20,7 +19,7 @@ from typing import List
 # 对于整个代码中全局变量的使用 需要检查一遍是否使用线程锁
 # !考虑引入kafka来管理http消息队列(待定)
 # 考虑使用MonitorStateManager的类来管理所有监控状态
-'''
+"""
 import threading
 
 class MonitorStateManager:
@@ -48,7 +47,7 @@ class MonitorStateManager:
         # ...更多操作...
 
     # 其他类似的操作
-'''
+"""
 
 
 app = Flask(__name__)
@@ -76,12 +75,22 @@ stage = ["normal", "normal", "normal"]  # 这个stage是跟任务绑定起来的
 # =====================================
 # 临界条件 Threshold Values
 # 所有list中的三个值都意味着三个模型及其任务 [BART, XLNet, DistilBERT][文本总结, 真假鉴别, 文本分类]
-critical_decay = [0.05, 0.05, 0.05] # 这个值代表了模型性能的衰退 具体是多少需要进行实验和测试
-critical_sample = [10000, 5000, 5000] # 需要通过x次样本的结果评估来决定是否从shadow到canary或者从canary到serving
+critical_decay = [
+    0.05,
+    0.05,
+    0.05,
+]  # 这个值代表了模型性能的衰退 具体是多少需要进行实验和测试
+critical_sample = [
+    10000,
+    5000,
+    5000,
+]  # 需要通过x次样本的结果评估来决定是否从shadow到canary或者从canary到serving
 sample_num = [0, 0, 0]
 t = [0.02, 0.03, 0.03]  # 需要模型有n%的性能提升才认为通过测试
 # SLA = 1500 # ms 平均响应时间需要低于500ms 无论是shadow模式下模型的推理时间还是canary模式下前端的总响应时间
-critical_err = 0.02  # 无论是shadow阶段还是canary阶段还是normal阶段 错误率都不得超过此占比
+critical_err = (
+    0.02  # 无论是shadow阶段还是canary阶段还是normal阶段 错误率都不得超过此占比
+)
 # shadow阶段 由于API并不返回candidate的预测值 所以不需要及时下架candidate 错误率交由monitor容器进行分析 降低deploy容器的负担
 # 此时错误类型包括 1) 模型推理响应时间超过LSA时间(会被记录在SQlite数据结构中) 2) 服务器API未知原因错误(错误码5xx)
 # canary阶段 由于API需要返回candidate的预测值 不仅需要满足实时性 也需要包括前端的错误 所以此时错误率交由前端容器frontend进行分析
@@ -90,54 +99,68 @@ critical_err = 0.02  # 无论是shadow阶段还是canary阶段还是normal阶段
 # candidate_err = [0, 0, 0]  # 三个候选模型的错误率统计
 # 由于错误率统计不再基于往期记录 而是每一轮(每k次API调用)的记录 所以不使用这两个list
 # 因为基于每一轮的错误率记录能够及时反应模型错误率突然上升的情况(包括但不限于GPU临时故障等)
-error_ = [False, False, False] # 有无frontend汇报的错误率超标问题 分别对应三个模型
+error_ = [False, False, False]  # 有无frontend汇报的错误率超标问题 分别对应三个模型
 # ======================================
 # 还有一些指标列表需要写在这里
-s_metrics: List[List[float]] = [[], [], []] # 暂时使用列表 保证不同长度时的灵活性
+s_metrics: List[List[float]] = [[], [], []]  # 暂时使用列表 保证不同长度时的灵活性
 # 分别存放三个模型的指标记录 对于文本总结任务 记录ROUGE数值 对于另外两个任务 记录ACC数值
 c_metrics: List[List[float]] = [[], [], []]
 # 关于数据指标的初始化??? 暂时未知 需要ETL那边的分析函数
 # ？？？
 
+
 # ================================================ 板块隔离带
-def report(message, task_id, model_name, model_type): #报告给prometheus容器的通用函数
+def report(message, task_id, model_name, model_type):  # 报告给prometheus容器的通用函数
     # 该函数内容在项目最后需要大改 因为该函数需要适应下面两个函数hardware_status和docker_status
     # message = 1 -> data shift 外部数据分布漂移
     # message = 2 -> error normal阶段 前端容器统计serving报警率超标
     # message = 3 -> performance decay 模型性能衰退
     # message = 4 -> shadow/canary阶段 候选模型错误率过高 直接被淘汰(消息播报 而非状态展示)
     prometheus_url = "http://prometheus:9090"  # 是这样的吗?
-    payload = {"warning_type": message, "task_type": task_id, "model_name": model_name, "model_type": model_type}
+    payload = {
+        "warning_type": message,
+        "task_type": task_id,
+        "model_name": model_name,
+        "model_type": model_type,
+    }
     # 该payload后期需要大改
     # 根据prometheus和grafana的具体工作机制来决定这里是否需要更详细的payload信息封装
     try:
         response = requests.post(prometheus_url, json=payload, timeout=5)
-        logging.info(f"Notified prometheus docker with {payload}, status: {response.status_code}")
+        logging.info(
+            f"Notified prometheus docker with {payload}, status: {response.status_code}"
+        )
 
     except requests.RequestException as e:
         logging.error(f"Error notifying prometheus docker: {e}")
 
-def hardware_status(): # 用于定期监控主机的硬件状态 并报告给prometheus
-    #$
+
+def hardware_status():  # 用于定期监控主机的硬件状态 并报告给prometheus
+    # $
     pass
     payload = {}
     # report(payload)
 
 
-def docker_status(): # 用于定期监控主机内所有容器的健康状况/主动检健康状况 并报告
+def docker_status():  # 用于定期监控主机内所有容器的健康状况/主动检健康状况 并报告
     pass
-    #$ http 访问 docker - healthcheck？ 目前不知道具体怎么做的
+    # $ http 访问 docker - healthcheck？ 目前不知道具体怎么做的
     payload = {}
     # report(payload)
+
+
 # ================================================
+
 
 def notify(docker, index, notification_type):
     # 这里的index就是任务(模型)ID 对应文本总结、真假鉴别、分类三个NLP任务
-    docker_url = "http://" + docker + ":8000/notify" # 内容网络访问容器端口
+    docker_url = "http://" + docker + ":8000/notify"  # 内容网络访问容器端口
     payload = {"type": notification_type, "index": index}
     try:
         response = requests.post(docker_url, json=payload, timeout=5)
-        logging.info(f"Notified {docker} docker with {payload}, status: {response.status_code}")
+        logging.info(
+            f"Notified {docker} docker with {payload}, status: {response.status_code}"
+        )
         return 200
     except requests.RequestException as e:
         logging.error(f"Error notifying {docker} docker: {e}")
@@ -151,17 +174,18 @@ def notify(docker, index, notification_type):
 # 2) 访问试探 try except
 # 3) 系列异常处理
 
+
 def database_merge(root_name):
-    #$ 根据deploy_data_dir和serving[index]确定database访问路径
-    #$ 根据label_dir以及? 确定用户行为标签库/文件的访问路径
-    #$ 生成对应的临时数据库放置的地址 有可能这个步骤不需要 因为有可能直接在原地进行拼接 但还是建议拼接成一个新的数据库 避免冲突
-    database_dir = os.path.join(monitor_data_dir, root_name) #需要根据实际情况修改
-    #$ (数据库行为) 根据prediction ID 进行数据库内容匹配和整合
-    #$ 将新数据库放置在database_dir中 等待下面的metric_analysis函数进行阶段定制化分析
+    # $ 根据deploy_data_dir和serving[index]确定database访问路径
+    # $ 根据label_dir以及? 确定用户行为标签库/文件的访问路径
+    # $ 生成对应的临时数据库放置的地址 有可能这个步骤不需要 因为有可能直接在原地进行拼接 但还是建议拼接成一个新的数据库 避免冲突
+    database_dir = os.path.join(monitor_data_dir, root_name)  # 需要根据实际情况修改
+    # $ (数据库行为) 根据prediction ID 进行数据库内容匹配和整合
+    # $ 将新数据库放置在database_dir中 等待下面的metric_analysis函数进行阶段定制化分析
     return database_dir
 
 
-def clear_labels(label_type): # 删除/app/labels中被访问过的数据库
+def clear_labels(label_type):  # 删除/app/labels中被访问过的数据库
     # 访问/app/labels中的数据库 注意是否需要使用线程锁
     # 根据label_type检测当前任务数据库
     # 删除对应的任务的数据库
@@ -170,43 +194,43 @@ def clear_labels(label_type): # 删除/app/labels中被访问过的数据库
 
 def metric_analysis(database, itype, data_analysis, e_analysis):
     error_status, data_info = False, 0
-    #$ 根据传入的目标数据库地址"database"进行访问
-    #$ 通过prediction条目与label条目进行对应的指标分析
-    if itype == 0: # 对于文本总结任务
-        metric = 1  #计算文本的ROUGE
-    else: # 对于其余两个分类任务
-        metric = 0  #计算分类ACC
+    # $ 根据传入的目标数据库地址"database"进行访问
+    # $ 通过prediction条目与label条目进行对应的指标分析
+    if itype == 0:  # 对于文本总结任务
+        metric = 1  # 计算文本的ROUGE
+    else:  # 对于其余两个分类任务
+        metric = 0  # 计算分类ACC
 
-    #$ 在normal阶段需要分析数据分布的改变:
+    # $ 在normal阶段需要分析数据分布的改变:
     if data_analysis:
-        #$ 对应的关于数据分布的分析 这个函数可能来源于ETL部分的代码改写
-        #直接返回关于data shift的指标 而不是数据分布 直接就在这里进行分析
+        # $ 对应的关于数据分布的分析 这个函数可能来源于ETL部分的代码改写
+        # 直接返回关于data shift的指标 而不是数据分布 直接就在这里进行分析
         data_info = 0
         pass
 
-    #$ 在shadow阶段还需要统计candidate的错误率
+    # $ 在shadow阶段还需要统计candidate的错误率
     if e_analysis:
-        error_rate = 0 # 统计数据库error条目占比
-        #$ 然后判断error_rate有无超过critical_err这个值
-        #$ 如果超过了 那么 error_status = True
+        error_rate = 0  # 统计数据库error条目占比
+        # $ 然后判断error_rate有无超过critical_err这个值
+        # $ 如果超过了 那么 error_status = True
 
     return metric, data_info, error_status
 
 
 def database_output(s_database, c_database, database_index, operation):
-    #$ 对s_database进行修改 - 删除ID 模型预测值 cls 一系列不被最终数据集需要的键值对
-    #$ 将s_database根据database_index写入monitor data中的目标任务数据库
-    #$ 删除该临时数据库s_database
+    # $ 对s_database进行修改 - 删除ID 模型预测值 cls 一系列不被最终数据集需要的键值对
+    # $ 将s_database根据database_index写入monitor data中的目标任务数据库
+    # $ 删除该临时数据库s_database
     if operation == "canary":
-        #$ 对c_database 进行同样的修改操作
-        #$ 然后把candidate数据库也写进去
+        # $ 对c_database 进行同样的修改操作
+        # $ 然后把candidate数据库也写进去
         pass
     if operation == "shadow" or operation == "canary":
         pass
-        #$ 在shadow和canary阶段 都需要删除c_database临时数据库
+        # $ 在shadow和canary阶段 都需要删除c_database临时数据库
 
 
-@app.route('/init', methods=['POST'])
+@app.route("/init", methods=["POST"])
 def init():
     # 收到消息只有两种类型: candidate / serving
     # candidate代表 此时train触发deploy 需要monitor监控对应的模型的数据库
@@ -219,14 +243,16 @@ def init():
 
     data = request.get_json(force=True)
     message = data.get("type")
-    model = data.get("model") # 这里的model是真实模型名称 不是索引数字
+    model = data.get("model")  # 这里的model是真实模型名称 不是索引数字
     model_index = data.get("index")
 
     if not message:
         logging.error("No notification type provided in the request.")
         return "No notification type provided", 400
 
-    if  model_index < 0 or model_index > 2 or not isinstance(model_index, int): # gpt标注说这个地方是有问题的
+    if (
+        model_index < 0 or model_index > 2 or not isinstance(model_index, int)
+    ):  # gpt标注说这个地方是有问题的
         logging.error("Invalid model index.")
         return "Invalid model index", 400
 
@@ -234,31 +260,33 @@ def init():
         with thread_lock:
             candidate[model_index] = model
             stage[model_index] = "shadow"
-            #$ 需要重置serving相关的指标 因为shadow阶段需要比较接下来同期的serving和candidate表现：
-            s_metrics[model_index] = [] # 需要重置serving相关的指标 目前好像指标就只有一个
-            c_metrics[model_index] = [] # 连同candidate也一起重置了
+            # $ 需要重置serving相关的指标 因为shadow阶段需要比较接下来同期的serving和candidate表现：
+            s_metrics[model_index] = (
+                []
+            )  # 需要重置serving相关的指标 目前好像指标就只有一个
+            c_metrics[model_index] = []  # 连同candidate也一起重置了
             # 之前的serving监控记录已经没有意义了 因为现在的重点考察对象是candidate
         # 不需要进行报告 deploy会将此条部署汇报给prometheus
-        pass # 这里是否还有逻辑内容遗漏?
+        pass  # 这里是否还有逻辑内容遗漏?
 
     elif message == "serving":
         with thread_lock:
             candidate[model_index] = None
             serving[model_index] = model
             stage[model_index] = "normal"
-            #$ 将各类全局指标的值进行迁移:
+            # $ 将各类全局指标的值进行迁移:
             # 例如将candidate(canary阶段产生的)的记录覆盖到serving中 并将candidate中对应位进行清零:
             s_metrics[model_index] = c_metrics[model_index]
-            c_metrics[model_index] = [] # 重置
+            c_metrics[model_index] = []  # 重置
             # 不需要额外对"canary"阶段进行选取 因为从shadow到canary的时候 所有记录都会发生一次重置
-            #$ 还需要对数据漂移的监控指标[model_index]初始化为[]
+            # $ 还需要对数据漂移的监控指标[model_index]初始化为[]
 
     else:
         logging.error(f"Unknown notification type: {message}")
         return "Unknown notification type", 400
 
 
-@app.route('/monitor', methods = ['POST']) # 逻辑最复杂的模型监控部分 核心机制部分
+@app.route("/monitor", methods=["POST"])  # 逻辑最复杂的模型监控部分 核心机制部分
 def monitor():
     global serving, candidate, stage, sample_num, s_metrics, c_metrics, error_
     data = request.get_json(force=True)
@@ -282,7 +310,7 @@ def monitor():
     # 8) 全局状态变量修改 / 修改状态文件
     # 9) 向prometheus报告所有相关内容
 
-    if stage[index] != status: # 如果出现不匹配的消息 直接报错 并且忽略
+    if stage[index] != status:  # 如果出现不匹配的消息 直接报错 并且忽略
         return "Unmatched model stage status", 400
 
     if status == "normal":
@@ -298,23 +326,25 @@ def monitor():
         # 4) 进行全局指标变量的更新和存储:
         # 使用线程锁访问指标全局变量:
         with thread_lock:
-            err_info = error_[index] #全局变量error_中对应的内容有无出现告警
+            err_info = error_[index]  # 全局变量error_中对应的内容有无出现告警
             avg_metric = np.mean(s_metrics[index]) if len(s_metrics[index]) > 0 else 0
             s_metrics[index].append(metric)
-            #$ 访问关于数据分布data_distribution的全局指标变量
-            #$ 进行类似的操作: 分析之前的指标的平均数 然后把data这个变量也加进去成为记录的一部分
-        data_shift = False # 是为了代码完整性 先写成这样
+            # $ 访问关于数据分布data_distribution的全局指标变量
+            # $ 进行类似的操作: 分析之前的指标的平均数 然后把data这个变量也加进去成为记录的一部分
+        data_shift = False  # 是为了代码完整性 先写成这样
         # 5) 接下来进入临界条件的判断: 有无frontend统计错误率超标 / 有无数据漂移 / 有无性能衰退
         # 实际上为了此部分的流程效率 临界条件判断是有优先级的 但是由于需要向prometheus全部上报 所以三者都需要进行判断
         # 如果临界条件被触发 则根据LOCK.json触发ETL并且告警给prometheus
         if data_shift or err_info or avg_metric - metric < critical_decay[index]:
             with thread_lock:
-                #$使用try和with open语句根据LOCK_file地址读取LOCK.json文件中的键LOCK的值
+                # $使用try和with open语句根据LOCK_file地址读取LOCK.json文件中的键LOCK的值
                 lock = False
                 if lock:
-                    code = notify("etl", None, "trigger") # 其实消息内容不重要 重要的是触发
-                    if code == 200: # 说明ETL触发成功
-                        pass #$ 用try和with open语句根据LOCK_file地址修改LOCK.json文件中的键LOCK的值为True
+                    code = notify(
+                        "etl", None, "trigger"
+                    )  # 其实消息内容不重要 重要的是触发
+                    if code == 200:  # 说明ETL触发成功
+                        pass  # $ 用try和with open语句根据LOCK_file地址修改LOCK.json文件中的键LOCK的值为True
         # 6) 给prometheus报告相关情况
         if data_shift:
             report("data shift", index, serving_name, "serving")
@@ -326,45 +356,52 @@ def monitor():
     elif status == "shadow":
         fail = False
         # 两个数据库的分析结束后需要删除bind amount中的数据
-        #1) 数据库拼接(serving+candidate)
+        # 1) 数据库拼接(serving+candidate)
         with thread_lock:
             serving_name = serving[index]
             candidate_name = candidate[index]
         db_dir_s = database_merge(serving_name)
         db_dir_c = database_merge(candidate_name)
         clear_labels(index)
-        #2) 匹配、指标计算
+        # 2) 匹配、指标计算
         metric_s, _, _ = metric_analysis(db_dir_s, index, False, False)
         metric_c, _, error = metric_analysis(db_dir_c, index, False, True)
-        #3) 将临时数据库添加入对应任务的database中
+        # 3) 将临时数据库添加入对应任务的database中
         database_output(db_dir_s, db_dir_c, index, "shadow")
-        #4) 全局变量操作
+        # 4) 全局变量操作
         with thread_lock:
             s_metrics[index].append(metric_s)
             c_metrics[index].append(metric_c)
-            sample_num[index] = sample_num[index] + 1000   # 这里的1000可能会被改 取决于deploy容器进行通知的频率
+            sample_num[index] = (
+                sample_num[index] + 1000
+            )  # 这里的1000可能会被改 取决于deploy容器进行通知的频率
             count = sample_num[index]
-        #5) 进入临界条件的判断:
+        # 5) 进入临界条件的判断:
         if error > critical_err:  # 首先判断错误率 若超标 直接进入部署撤销流程
             notify("deploy", index, "normal")
             fail = True
             # 等待立即进入shadow fail的标准阶段
-        elif count >= critical_sample[index]: # 进入临界判断状态
+        elif count >= critical_sample[index]:  # 进入临界判断状态
             s_metric_avg = np.mean(s_metrics[index]) if len(s_metrics[index]) > 0 else 0
             c_metric_avg = np.mean(c_metrics[index]) if len(c_metrics[index]) > 0 else 0
-            if c_metric_avg - s_metric_avg >= t[index]:  # 通过online evaluation 从shadow进入canary阶段
+            if (
+                c_metric_avg - s_metric_avg >= t[index]
+            ):  # 通过online evaluation 从shadow进入canary阶段
                 notify("deploy", index, "canary")
                 notify("frontend", index, "canary")
                 with thread_lock:
                     stage[index] = "canary"
-                    s_metrics[index], c_metrics[index] = [], [] # 重置指标 供canary阶段重新计算
+                    s_metrics[index], c_metrics[index] = (
+                        [],
+                        [],
+                    )  # 重置指标 供canary阶段重新计算
                     sample_num[index] = 0
-            else: # 未通过测试 进入shadow fail标准阶段
+            else:  # 未通过测试 进入shadow fail标准阶段
                 notify("deploy", index, "normal")
                 fail = True
                 # 等待立即进入shadow(online evaluation) fail的标准阶段
         if fail:
-            #$ 报告给prometheus - candidate模型错误率超标:(下面的代码可能要改)
+            # $ 报告给prometheus - candidate模型错误率超标:(下面的代码可能要改)
             report("excessive error", index, candidate_name, "candidate")
             with thread_lock:
                 stage[index] = "normal"
@@ -375,19 +412,19 @@ def monitor():
 
     elif status == "canary":
         # 不再需要计算两者的指标 因为serving和candidate模型收到的流量不同
-        #1) 数据库拼接、删除label数据:
+        # 1) 数据库拼接、删除label数据:
         with thread_lock:
             serving_name = serving[index]
             candidate_name = candidate[index]
         db_dir_s = database_merge(serving_name)
         db_dir_c = database_merge(candidate_name)
         clear_labels(index)
-        #2) 不需要进行指标计算 将临时数据库添加入对应任务的database中
+        # 2) 不需要进行指标计算 将临时数据库添加入对应任务的database中
         database_output(db_dir_s, db_dir_c, index, "canary")
-        #3) 全局指标变量获取:
+        # 3) 全局指标变量获取:
         with thread_lock:
             err_info = error_[index]
-        #4) 临界条件判断 并执行对应操作:
+        # 4) 临界条件判断 并执行对应操作:
         if err_info:
             # 由于warning线程已及时汇报 此处不再需要向prometheus上报
             notify("deploy", index, "normal")
@@ -396,10 +433,10 @@ def monitor():
                 # 不需要对数据漂移的监控指标[model_index]进行初始化
 
     else:
-        pass # 不可能出现的情况 为了保持代码完整性 写pass在这里
+        pass  # 不可能出现的情况 为了保持代码完整性 写pass在这里
 
 
-@app.route('/warning', methods=['POST'])
+@app.route("/warning", methods=["POST"])
 def warning():
     # 来自前端的http请求 主要有两种缘由:
     # 1) 某个normal阶段的模型 前端统计的错误率超过e=2% 需要由monitor容器触发ETL(为避免冲突 仅monitor有此操作权限)
@@ -425,7 +462,7 @@ def warning():
             # 为什么不直接进行修改其他全局变量?
             # 1. 防止该线程对于众多全局变量的修改正好与monitor线程冲突 (即使两个事件同时发生具有极小概率)
             # 2. 直接进行修改 会使得部分数据库没有来得及被搬运至monitor data卷供后续新模型训练
-            #$ 向prometheus汇报此error信息 汇报时不需要使用线程锁:
+            # $ 向prometheus汇报此error信息 汇报时不需要使用线程锁:
             if current_status == "normal":
                 report("excessive error", ind, serving_name, "serving")
             elif current_status == "canary":
@@ -434,14 +471,20 @@ def warning():
             logging.error(f"Error index type out of range: {ind}")
             return "Error index type out of range", 400
     except Exception as e:
-        logging.exception(f"An unexpected error occurred: {type(e).__name__} - {str(e)}")
+        logging.exception(
+            f"An unexpected error occurred: {type(e).__name__} - {str(e)}"
+        )
         return "Internal Server Error", 500
 
     return "", 200
 
 
 # ---------------- Main ----------------
-if __name__ == '__main__':
-    threading.Thread(target=hardware_status).start() # 线程1 旁路
-    threading.Thread(target=docker_status).start() # 线程2 旁路 # 此部分有可能不做开发 因为不是项目的硬性要求
-    app.run(host='0.0.0.0', port=8000, threaded=True) # 外部触发的关于模型部署的监控 线路3 主路
+if __name__ == "__main__":
+    threading.Thread(target=hardware_status).start()  # 线程1 旁路
+    threading.Thread(
+        target=docker_status
+    ).start()  # 线程2 旁路 # 此部分有可能不做开发 因为不是项目的硬性要求
+    app.run(
+        host="0.0.0.0", port=8000, threaded=True
+    )  # 外部触发的关于模型部署的监控 线路3 主路
