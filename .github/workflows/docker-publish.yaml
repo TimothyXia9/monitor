@@ -5,30 +5,21 @@ on:
         branches: ["main"]
         tags: ["v*.*.*"]
         paths:
-            # 变动特定的路径才触发
             - "Dockerfile"
             - "entrypoint.sh"
             - ".github/workflows/docker-publish.yaml"
             - "requirements.txt"
-            - "api/**"
-            - "config/**"
-            - "scripts/**"
-            - "tests/**"
-            - "dashboards/**"
-            - "mlops_monitor/**"
-            - "triggers/**"
+            - "monitor_app_frame.py"
 
     pull_request:
         branches: ["main"]
 
 env:
-    #这里改名字
-    DOCKER_HUB_REPO: tianqixia/mlops-monitor
+    DOCKER_HUB_REPO: tianqixia/monitor-app
 
 jobs:
     build:
         runs-on: ubuntu-latest
-        # !! environment github上设置
         environment: ml-monitor
         permissions:
             contents: read
