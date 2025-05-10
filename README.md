@@ -1,1 +1,1 @@
-[111](file:///D:/CODE/ML_devops/project/frontend/index.html)
+[111](file://index.html)
